@@ -218,12 +218,12 @@ def official_environment(family: str, env: Dict[str, str]) -> Dict[str, str]:
     activated = activate_batch(Path(root) / "VC/Auxiliary/Build/vcvars64.bat", unactivated_environment(env))
     if family == "clang-cl":
         existing = shutil.which("clang-cl.exe", path=env.get("PATH", ""))
-        directories = [
-            Path(env.get("PROGRAMFILES", r"C:\Program Files")) / "LLVM/bin",
-            Path(root) / "VC/Tools/Llvm/x64/bin",
-        ]
+        # Prefer LLVM bundled with the selected Visual Studio installation.
+        # Standalone LLVM on PATH may be too old for its MSVC STL headers.
+        directories = [Path(root) / "VC/Tools/Llvm/x64/bin"]
         if existing:
-            directories.insert(0, Path(existing).parent)
+            directories.append(Path(existing).parent)
+        directories.append(Path(env.get("PROGRAMFILES", r"C:\Program Files")) / "LLVM/bin")
         for directory in directories:
             if (directory / "clang-cl.exe").is_file():
                 activated["PATH"] = str(directory) + os.pathsep + activated["PATH"]
