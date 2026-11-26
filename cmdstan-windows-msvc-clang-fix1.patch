@@ -1,0 +1,160 @@
+diff --git a/.github/workflows/windows-native.yml b/.github/workflows/windows-native.yml
+index c4e496e..74076ec 100644
+--- a/.github/workflows/windows-native.yml
++++ b/.github/workflows/windows-native.yml
+@@ -37,6 +37,8 @@ jobs:
+       - uses: actions/setup-python@v5
+         with:
+           python-version: '3.12'
++      - name: Test Windows build preparation
++        run: python scripts/test_windows_build.py
+       - name: Build CmdStan utilities and libraries
+         run: python scripts/windows_build.py build --compiler ${{ matrix.compiler }} --toolchain ${{ matrix.toolchain }} -j 2
+       - name: Compile Bernoulli model (reuse existing native build)
+diff --git a/README.md b/README.md
+index 4f382ad..5ee7fba 100644
+--- a/README.md
++++ b/README.md
+@@ -69,7 +69,7 @@ bin\stansummary.exe output.csv
+ ```
+ 
+ Use `--compiler cl` for MSVC. `--toolchain official` discovers Visual Studio
+-2022 Build Tools (and an installed LLVM for clang-cl). The default `auto`
++2022 or newer Build Tools (and an installed LLVM for clang-cl). The default `auto`
+ tries an explicitly configured portable directory, an activated environment,
+ the default portable installation and Visual Studio, then offers a portable
+ installation if no suitable tools exist. `model` automatically builds CmdStan
+diff --git a/scripts/test_windows_build.py b/scripts/test_windows_build.py
+new file mode 100644
+index 0000000..b559090
+--- /dev/null
++++ b/scripts/test_windows_build.py
+@@ -0,0 +1,61 @@
++"""Regression tests for Windows build preparation (no compiler required)."""
++
++import tempfile
++import unittest
++from pathlib import Path
++from unittest.mock import patch
++
++import windows_build
++import windows_toolchain
++
++
++class SundialsHeaderTests(unittest.TestCase):
++    def test_posix_timer_documentation_is_preserved(self):
++        comment = "/* Use POSIX timers if available.\n *     #define SUNDIALS_HAVE_POSIX_TIMERS\n */\n"
++        source = comment + "#define SUNDIALS_HAVE_POSIX_TIMERS\n"
++        expected = comment + "#undef SUNDIALS_HAVE_POSIX_TIMERS\n"
++        self.assertEqual(windows_build.patch_sundials_header(source), expected)
++        self.assertEqual(windows_build.patch_sundials_header(expected), expected)
++
++    def test_deprecation_and_macro_boundary(self):
++        source = (
++            "#  define SUNDIALS_HAVE_POSIX_TIMERS 1\n"
++            "#define SUNDIALS_HAVE_POSIX_TIMERS_OTHER 1\n"
++            "#define DEPRECATED(msg) __attribute__ ((__deprecated__(msg)))\n"
++            "#define DEPRECATED_DEFAULT __attribute__ ((__deprecated__))\n"
++        )
++        expected = (
++            "#undef SUNDIALS_HAVE_POSIX_TIMERS\n"
++            "#define SUNDIALS_HAVE_POSIX_TIMERS_OTHER 1\n"
++            "#define DEPRECATED(msg) __declspec(deprecated(msg))\n"
++            "#define DEPRECATED_DEFAULT __declspec(deprecated)\n"
++        )
++        self.assertEqual(windows_build.patch_sundials_header(source), expected)
++
++
++class OfficialToolchainTests(unittest.TestCase):
++    def test_visual_studio_2026_discovery(self):
++        with tempfile.TemporaryDirectory() as directory:
++            base = Path(directory)
++            vswhere = base / "Microsoft Visual Studio/Installer/vswhere.exe"
++            vswhere.parent.mkdir(parents=True)
++            vswhere.touch()
++            for version in ("17", "18"):
++                root = base / "Microsoft Visual Studio" / version / "Enterprise"
++                for family in ("cl", "clang-cl"):
++                    with self.subTest(version=version, family=family):
++                        env = {"PROGRAMFILES(X86)": str(base), "PROGRAMFILES": str(base), "PATH": ""}
++                        with (
++                            patch.object(windows_toolchain.subprocess, "check_output", return_value=str(root) + "\n") as query,
++                            patch.object(windows_toolchain, "activate_batch", return_value={"PATH": str(root)}) as activate,
++                            patch.object(windows_toolchain.shutil, "which", return_value=str(root / (family + ".exe"))),
++                        ):
++                            result = windows_toolchain.official_environment(family, env)
++                        args = query.call_args.args[0]
++                        self.assertEqual(args[args.index("-version") + 1], "[17.0,)")
++                        self.assertEqual(activate.call_args.args[0], root / "VC/Auxiliary/Build/vcvars64.bat")
++                        self.assertIn(str(root), result["PATH"])
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/scripts/windows_build.py b/scripts/windows_build.py
+index 0775a72..1d7d931 100644
+--- a/scripts/windows_build.py
++++ b/scripts/windows_build.py
+@@ -110,6 +110,18 @@ def dependency(name):
+     return path
+ 
+ 
++def patch_sundials_header(text):
++    """Adapt vendored SUNDIALS headers to the Windows compiler."""
++    text = text.replace("__attribute__ ((__deprecated__(msg)))", "__declspec(deprecated(msg))")
++    text = text.replace("__attribute__ ((__deprecated__))", "__declspec(deprecated)")
++    # Match the directive, not the example inside the preceding C comment.
++    return re.sub(
++        r"(?m)^[ \t]*#[ \t]*define[ \t]+SUNDIALS_HAVE_POSIX_TIMERS\b[^\r\n]*$",
++        "#undef SUNDIALS_HAVE_POSIX_TIMERS",
++        text,
++    )
++
++
+ def checked_out_revision(path):
+     if (path / ".git").exists():
+         return subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
+@@ -200,10 +212,7 @@ class Build:
+         for name in ("sundials_config.h", "sundials_export.h"):
+             path = self.include / "sundials" / name
+             text = path.read_text(encoding="utf-8")
+-            text = text.replace("__attribute__ ((__deprecated__(msg)))", "__declspec(deprecated(msg))")
+-            text = text.replace("__attribute__ ((__deprecated__))", "__declspec(deprecated)")
+-            text = text.replace("#define SUNDIALS_HAVE_POSIX_TIMERS\n", "/* #undef SUNDIALS_HAVE_POSIX_TIMERS */\n")
+-            path.write_text(text, encoding="utf-8")
++            path.write_text(patch_sundials_header(text), encoding="utf-8")
+         version = self.tbb.name.removeprefix("tbb_")
+         archive = fetch(f"https://github.com/uxlfoundation/oneTBB/releases/download/v{version}/tbb-{version}-win.zip",
+                         BUILD / "downloads" / f"tbb-{version}-win.zip")
+diff --git a/scripts/windows_toolchain.py b/scripts/windows_toolchain.py
+index 1b08d59..7c495e7 100644
+--- a/scripts/windows_toolchain.py
++++ b/scripts/windows_toolchain.py
+@@ -188,7 +188,7 @@ def portable_environment(root: Path, family: str, env: Dict[str, str]) -> Dict[s
+ 
+ 
+ def official_environment(family: str, env: Dict[str, str]) -> Dict[str, str]:
+-    """Discover and activate an installed Visual Studio 2022 x64 toolchain."""
++    """Discover and activate an installed Visual Studio 2022 or newer x64 toolchain."""
+     vswhere = (
+         Path(env.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"))
+         / "Microsoft Visual Studio/Installer/vswhere.exe"
+@@ -202,7 +202,7 @@ def official_environment(family: str, env: Dict[str, str]) -> Dict[str, str]:
+             "-products",
+             "*",
+             "-version",
+-            "[17.0,18.0)",
++            "[17.0,)",
+             "-requires",
+             "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+             "-property",
+@@ -213,7 +213,8 @@ def official_environment(family: str, env: Dict[str, str]) -> Dict[str, str]:
+         encoding="utf-8",
+     ).strip()
+     if not root:
+-        raise RuntimeError("Visual Studio 2022 C++ Build Tools not found")
++        raise RuntimeError("Visual Studio 2022 or newer C++ Build Tools not found")
++    print(f"Visual Studio installation: {root}", flush=True)
+     activated = activate_batch(Path(root) / "VC/Auxiliary/Build/vcvars64.bat", unactivated_environment(env))
+     if family == "clang-cl":
+         existing = shutil.which("clang-cl.exe", path=env.get("PATH", ""))

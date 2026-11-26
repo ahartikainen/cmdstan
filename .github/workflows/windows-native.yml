@@ -37,6 +37,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Test Windows build preparation
+        run: python scripts/test_windows_build.py
       - name: Build CmdStan utilities and libraries
         run: python scripts/windows_build.py build --compiler ${{ matrix.compiler }} --toolchain ${{ matrix.toolchain }} -j 2
       - name: Compile Bernoulli model (reuse existing native build)

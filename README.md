@@ -69,7 +69,7 @@ bin\stansummary.exe output.csv
 ```
 
 Use `--compiler cl` for MSVC. `--toolchain official` discovers Visual Studio
-2022 Build Tools (and an installed LLVM for clang-cl). The default `auto`
+2022 or newer Build Tools (and an installed LLVM for clang-cl). The default `auto`
 tries an explicitly configured portable directory, an activated environment,
 the default portable installation and Visual Studio, then offers a portable
 installation if no suitable tools exist. `model` automatically builds CmdStan

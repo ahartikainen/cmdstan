@@ -188,7 +188,7 @@ def portable_environment(root: Path, family: str, env: Dict[str, str]) -> Dict[s
 
 
 def official_environment(family: str, env: Dict[str, str]) -> Dict[str, str]:
-    """Discover and activate an installed Visual Studio 2022 x64 toolchain."""
+    """Discover and activate an installed Visual Studio 2022 or newer x64 toolchain."""
     vswhere = (
         Path(env.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"))
         / "Microsoft Visual Studio/Installer/vswhere.exe"
@@ -202,7 +202,7 @@ def official_environment(family: str, env: Dict[str, str]) -> Dict[str, str]:
             "-products",
             "*",
             "-version",
-            "[17.0,18.0)",
+            "[17.0,)",
             "-requires",
             "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
             "-property",
@@ -213,7 +213,8 @@ def official_environment(family: str, env: Dict[str, str]) -> Dict[str, str]:
         encoding="utf-8",
     ).strip()
     if not root:
-        raise RuntimeError("Visual Studio 2022 C++ Build Tools not found")
+        raise RuntimeError("Visual Studio 2022 or newer C++ Build Tools not found")
+    print(f"Visual Studio installation: {root}", flush=True)
     activated = activate_batch(Path(root) / "VC/Auxiliary/Build/vcvars64.bat", unactivated_environment(env))
     if family == "clang-cl":
         existing = shutil.which("clang-cl.exe", path=env.get("PATH", ""))

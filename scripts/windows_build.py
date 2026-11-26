@@ -110,6 +110,18 @@ def dependency(name):
     return path
 
 
+def patch_sundials_header(text):
+    """Adapt vendored SUNDIALS headers to the Windows compiler."""
+    text = text.replace("__attribute__ ((__deprecated__(msg)))", "__declspec(deprecated(msg))")
+    text = text.replace("__attribute__ ((__deprecated__))", "__declspec(deprecated)")
+    # Match the directive, not the example inside the preceding C comment.
+    return re.sub(
+        r"(?m)^[ \t]*#[ \t]*define[ \t]+SUNDIALS_HAVE_POSIX_TIMERS\b[^\r\n]*$",
+        "#undef SUNDIALS_HAVE_POSIX_TIMERS",
+        text,
+    )
+
+
 def checked_out_revision(path):
     if (path / ".git").exists():
         return subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
@@ -200,10 +212,7 @@ class Build:
         for name in ("sundials_config.h", "sundials_export.h"):
             path = self.include / "sundials" / name
             text = path.read_text(encoding="utf-8")
-            text = text.replace("__attribute__ ((__deprecated__(msg)))", "__declspec(deprecated(msg))")
-            text = text.replace("__attribute__ ((__deprecated__))", "__declspec(deprecated)")
-            text = text.replace("#define SUNDIALS_HAVE_POSIX_TIMERS\n", "/* #undef SUNDIALS_HAVE_POSIX_TIMERS */\n")
-            path.write_text(text, encoding="utf-8")
+            path.write_text(patch_sundials_header(text), encoding="utf-8")
         version = self.tbb.name.removeprefix("tbb_")
         archive = fetch(f"https://github.com/uxlfoundation/oneTBB/releases/download/v{version}/tbb-{version}-win.zip",
                         BUILD / "downloads" / f"tbb-{version}-win.zip")
