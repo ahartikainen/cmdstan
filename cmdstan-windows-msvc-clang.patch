@@ -1,0 +1,774 @@
+diff --git a/.github/workflows/windows-native.yml b/.github/workflows/windows-native.yml
+new file mode 100644
+index 0000000..c4e496e
+--- /dev/null
++++ b/.github/workflows/windows-native.yml
+@@ -0,0 +1,67 @@
++name: Native Windows CmdStan
++
++on:
++  push:
++  pull_request:
++  workflow_dispatch:
++
++jobs:
++  native-windows:
++    name: ${{ matrix.profile }}
++    runs-on: windows-2025
++    timeout-minutes: 120
++    strategy:
++      fail-fast: false
++      matrix:
++        include:
++          - profile: official-msvc
++            compiler: cl
++            toolchain: official
++          - profile: official-clang
++            compiler: clang-cl
++            toolchain: official
++          - profile: portable-msvc
++            compiler: cl
++            toolchain: portable
++          - profile: portable-clang
++            compiler: clang-cl
++            toolchain: portable
++    env:
++      # The repository maintainers must review the applicable Microsoft terms
++      # before enabling portable downloads in this workflow.
++      CMDSTAN_ACCEPT_MSVC_LICENSE: 'yes'
++    steps:
++      - uses: actions/checkout@v4
++        with:
++          submodules: recursive
++      - uses: actions/setup-python@v5
++        with:
++          python-version: '3.12'
++      - name: Build CmdStan utilities and libraries
++        run: python scripts/windows_build.py build --compiler ${{ matrix.compiler }} --toolchain ${{ matrix.toolchain }} -j 2
++      - name: Compile Bernoulli model (reuse existing native build)
++        run: python scripts/windows_build.py model examples/bernoulli/bernoulli.stan --compiler ${{ matrix.compiler }} --toolchain ${{ matrix.toolchain }}
++      - name: Sample two chains
++        shell: pwsh
++        run: |
++          & .\examples\bernoulli\bernoulli.exe sample num_samples=100 num_warmup=100 data file=examples/bernoulli/bernoulli.data.json random seed=12345 id=1 output file=chain1.csv
++          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
++          & .\examples\bernoulli\bernoulli.exe sample num_samples=100 num_warmup=100 data file=examples/bernoulli/bernoulli.data.json random seed=12345 id=2 output file=chain2.csv
++          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
++      - name: Check samples with CmdStan utilities
++        shell: pwsh
++        run: |
++          & .\bin\stansummary.exe chain1.csv chain2.csv
++          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
++          & .\bin\diagnose.exe chain1.csv chain2.csv
++          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
++      - name: Upload sample outputs and native build configuration
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: native-windows-${{ matrix.profile }}
++          if-no-files-found: ignore
++          path: |
++            chain1.csv
++            chain2.csv
++            build/windows/*/complete.json
+diff --git a/.gitignore b/.gitignore
+index a53f4e6..023601b 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -60,3 +60,7 @@ output*.csv
+ #clangd
+ compile_commands.json
+ compile_flags.txt
++
++# Optional native Windows build
++/build/windows/
++/scripts/__pycache__/
+diff --git a/README.md b/README.md
+index badfa78..4f382ad 100644
+--- a/README.md
++++ b/README.md
+@@ -50,3 +50,61 @@ CmdStan](https://github.com/stan-dev/cmdstan/wiki/Getting-Started-with-CmdStan)
+ As of version 2.22, CmdStan has switched to the new Stan-to-C++ compiler, called [stanc3](https://github.com/stan-dev/stanc3).  This compiler is intended to be backwards compatible with the existing Stan language and should accept all models that compile under the release 2.21 compiler, (see this [list of bug fixes](https://github.com/stan-dev/stanc3/wiki/changes-from-stanc2)). 
+ 
+ If a model that compiled for versions prior to 2.22, please report a bug on the [stanc3](https://github.com/stan-dev/stanc3) repository. Otherwise, report the issue to the [CmdStan](https://github.com/stan-dev/cmdstan) repository.
++
++### Experimental native Windows build (MSVC and clang-cl)
++
++The existing GNU Make build remains unchanged. The optional Windows build
++script uses native x64 Microsoft-compatible compilers, without GNU Make,
++MinGW, Rtools, WSL or a permanent PATH change. It requires Python 3.12+ and
++recursively initialized Stan submodules. Run these commands from the CmdStan
++root in an ordinary Command Prompt.
++
++```bat
++git submodule update --init --recursive
++python scripts\windows_build.py install portable --compiler clang-cl
++python scripts\windows_build.py build --compiler clang-cl --toolchain portable
++python scripts\windows_build.py model examples\bernoulli\bernoulli.stan --compiler clang-cl --toolchain portable
++examples\bernoulli\bernoulli.exe sample data file=examples/bernoulli/bernoulli.data.json
++bin\stansummary.exe output.csv
++```
++
++Use `--compiler cl` for MSVC. `--toolchain official` discovers Visual Studio
++2022 Build Tools (and an installed LLVM for clang-cl). The default `auto`
++tries an explicitly configured portable directory, an activated environment,
++the default portable installation and Visual Studio, then offers a portable
++installation if no suitable tools exist. `model` automatically builds CmdStan
++if necessary. Use matching compiler options for `build` and `model`.
++
++The portable installation defaults to `%LOCALAPPDATA%\cmdstan\toolchain`.
++Set `CMDSTAN_TOOLCHAIN_DIR` to override it, or point it to an existing compatible
++portable httpstan installation (a directory containing `msvc` and, for clang-cl,
++`llvm`). The installer uses the pinned standalone MSVC extractor, MSVC 14.44,
++Windows SDK 26100, and LLVM 20.1.8. The MSVC/SDK version defaults can be overridden
++with `CMDSTAN_PORTABLE_MSVC_VERSION` and `CMDSTAN_PORTABLE_SDK_VERSION` before the
++first installation. Microsoft components are downloaded only after acceptance
++of the applicable [license terms](https://visualstudio.microsoft.com/license-terms/).
++After reviewing these terms use `--accept-license` or set
++`CMDSTAN_ACCEPT_MSVC_LICENSE=yes` for unattended installation. No Microsoft
++compiler or SDK is redistributed by CmdStan. Windows Installer must be permitted
++on the machine; several gigabytes of free space are needed.
++
++The driver uses the versions of Boost, Eigen, TBB and SUNDIALS selected in the
++checked-out Stan Math makefiles. It downloads the matching Microsoft-ABI TBB
++release binaries, compiles the same SUNDIALS source groups to `.lib` files,
++and uses the existing Windows `stanc` binary (or the upstream nightly asset).
++It does not modify the Stan or Stan Math submodules. The build is cached under
++`build/windows` by compiler/configuration/revisions; use `--rebuild` after editing
++native sources or headers locally. `--stanc-version v2.40.0` (when that release
++exists) or `STANC3_VERSION` selects another stanc release tag. Delete the cached
++nightly asset in `build/windows/downloads` and use `--rebuild` to refresh it.
++
++Use `--threads` to enable `STAN_THREADS`, `--optimization Od` to diagnose
++compiler failures, and `-j N` for parallel SUNDIALS C compilation. `--stanc-flag=...`
++passes an option to stanc. Heavy C++ compilation is deliberately sequential
++in this first version. CmdStan utilities are placed in `bin`, the compiled model
++beside its `.stan` file, and the corresponding `tbb.dll` beside each executable.
++The Microsoft Visual C++ runtime must also be available at runtime. Use a separate
++checkout from a GCC/MinGW build: the outputs and adjacent TBB DLL have the same
++names but different ABIs. This is an experimental CPU build path; GNU Make and
++CmdStanPy integration, MPI, OpenCL, user-header flags, precompiled headers and
++full native test-suite support are not included yet.
+diff --git a/scripts/windows_build.py b/scripts/windows_build.py
+new file mode 100644
+index 0000000..0775a72
+--- /dev/null
++++ b/scripts/windows_build.py
+@@ -0,0 +1,352 @@
++"""Experimental native Windows x64 CmdStan builds (cl and clang-cl)."""
++
++import argparse
++import hashlib
++import json
++import os
++import re
++import shutil
++import subprocess
++import sys
++import tempfile
++import urllib.request
++import zipfile
++from concurrent.futures import ThreadPoolExecutor
++from pathlib import Path
++
++import windows_toolchain as toolchain
++
++ROOT = Path(__file__).resolve().parents[1]
++STAN = ROOT / "stan"
++MATH = STAN / "lib" / "stan_math"
++BUILD = ROOT / "build" / "windows"
++UTILITIES = ("print", "stansummary", "diagnose")
++MACROS = (
++    "BOOST_DISABLE_ASSERTS", "BOOST_PHOENIX_NO_VARIADIC_EXPRESSION",
++    "BOOST_ALL_NO_LIB", "__TBB_NO_IMPLICIT_LINKAGE=1", "NOMINMAX",
++    "WIN32_LEAN_AND_MEAN", "_USE_MATH_DEFINES", "_BOOST_LGAMMA=1",
++    "SUNDIALS_STATIC_DEFINE", "_ITERATOR_DEBUG_LEVEL=0", "NDEBUG",
++)
++
++
++def run(args, env=None):
++    """Stream commands and diagnostics, aborting on the first failure."""
++    args = [str(arg) for arg in args]
++    print(subprocess.list2cmdline(args), flush=True)
++    subprocess.run(args, cwd=ROOT, env=env, check=True)
++
++
++def executable(name, env):
++    path = shutil.which(name + ".exe", path=env.get("PATH", ""))
++    if not path:
++        raise RuntimeError(f"{name}.exe not found in selected toolchain")
++    return path
++
++
++def accept_license(args):
++    return args.accept_license or os.environ.get("CMDSTAN_ACCEPT_MSVC_LICENSE", "").lower() == "yes"
++
++
++def install(args):
++    root = toolchain.toolchain_directory()
++    accepted = accept_license(args)
++    if not (root / "msvc" / "setup_x64.bat").is_file() and not accepted:
++        print(f"Review the Microsoft Build Tools and SDK terms: {toolchain.LICENSE_URL}")
++        if sys.stdin.isatty():
++            accepted = input("Accept the applicable license terms? [y/N] ").strip().lower() in {"y", "yes"}
++        if not accepted:
++            raise RuntimeError("License acceptance required for Microsoft downloads")
++    toolchain.install_portable(root, args.compiler, accepted)
++
++
++def environment(args):
++    base = {key.upper(): value for key, value in os.environ.items()}
++    if args.toolchain == "official":
++        env = toolchain.official_environment(args.compiler, base)
++    elif args.toolchain == "portable":
++        install(args)
++        env = toolchain.portable_environment(toolchain.toolchain_directory(), args.compiler, base)
++    else:
++        try:
++            env = toolchain.toolchain_environment(args.compiler)
++        except RuntimeError:
++            # The installer reuses existing components and refuses partial installations.
++            install(args)
++            env = toolchain.portable_environment(toolchain.toolchain_directory(), args.compiler, base)
++    for name in (args.compiler, "link", "lib"):
++        print(f"{name}: {executable(name, env)}", flush=True)
++    # Avoid flags injected by another developer environment.
++    for name in ("CL", "_CL_", "LINK", "_LINK_"):
++        env.pop(name, None)
++    return env
++
++
++def fetch(url, target):
++    """Cache release assets. Log their digests (not a pinned-hash verification)."""
++    target.parent.mkdir(parents=True, exist_ok=True)
++    if not target.is_file():
++        temp = target.with_suffix(target.suffix + ".part")
++        print(f"Downloading {url}", flush=True)
++        try:
++            with urllib.request.urlopen(url, timeout=120) as src, temp.open("wb") as dst:
++                shutil.copyfileobj(src, dst)
++            temp.replace(target)
++        finally:
++            temp.unlink(missing_ok=True)
++    with target.open("rb") as stream:
++        print(f"{target.name}: sha256={hashlib.file_digest(stream, 'sha256').hexdigest()}", flush=True)
++    return target
++
++
++def dependency(name):
++    """Use the dependency selected by the checked-out Stan Math makefiles."""
++    text = (MATH / "make" / "libraries").read_text(encoding="utf-8")
++    match = re.search(rf"^\s*{name}\s*\?=\s*\$\(MATH\)lib/([^\s#]+)", text, re.MULTILINE)
++    if not match:
++        raise RuntimeError(f"Cannot determine {name} from Stan Math make/libraries")
++    path = MATH / "lib" / match.group(1)
++    if not path.is_dir():
++        raise RuntimeError(f"Missing vendored dependency: {path}")
++    return path
++
++
++def checked_out_revision(path):
++    if (path / ".git").exists():
++        return subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
++    return "release archive"
++
++
++def copy_binary(source, destination):
++    destination.parent.mkdir(parents=True, exist_ok=True)
++    if not destination.exists() or not source.samefile(destination):
++        shutil.copy2(source, destination)
++
++
++class Build:
++    """Build the existing CmdStan sources without modifying the submodules."""
++
++    def __init__(self, args, env):
++        self.args, self.env = args, env
++        if not (MATH / "make" / "libraries").is_file():
++            raise RuntimeError("Initialize submodules: git submodule update --init --recursive")
++        self.cxx = executable(args.compiler, env)
++        self.link = executable("link", env)
++        self.lib = executable("lib", env)
++        self.sundials = dependency("SUNDIALS")
++        self.tbb = dependency("TBB")
++        self.boost = dependency("BOOST")
++        self.eigen = dependency("EIGEN")
++        rapid = sorted((STAN / "lib").glob("rapidjson_*"))
++        cli = sorted((ROOT / "lib").glob("CLI11-*"))
++        if len(rapid) != 1 or len(cli) != 1:
++            raise RuntimeError("Expected exactly one vendored RapidJSON and CLI11 directory")
++        self.groups = ["cvodes", "idas", "kinsol"]
++        if "SUNDIALS_ARKODE" in (MATH / "make" / "libraries").read_text(encoding="utf-8"):
++            self.groups.append("arkode")
++        self.groups.append("nvecserial")
++        config = {
++            "compiler": args.compiler, "optimization": args.optimization, "threads": args.threads,
++            "compiler_path": self.cxx, "link_path": self.link, "lib_path": self.lib,
++            "compiler_mtime": Path(self.cxx).stat().st_mtime_ns,
++            "link_mtime": Path(self.link).stat().st_mtime_ns,
++            "lib_mtime": Path(self.lib).stat().st_mtime_ns,
++            "INCLUDE": env.get("INCLUDE"), "LIB": env.get("LIB"),
++            "stanc": args.stanc_version, "revisions": [checked_out_revision(p) for p in (ROOT, STAN, MATH)],
++            "script": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
++        }
++        key = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()[:16]
++        self.directory = BUILD / f"{args.compiler}-{key}"
++        self.directory.mkdir(parents=True, exist_ok=True)
++        self.config = config
++        self.marker = self.directory / "complete.json"
++        self.include = self.directory / "sundials-include"
++        self.includes = [ROOT / "src", STAN / "src", rapid[0], cli[0], MATH,
++                         self.eigen, self.boost, self.include, self.sundials / "src/sundials", self.tbb / "include"]
++        self.libs = [self.directory / f"sundials_{name}.lib" for name in self.groups] + [self.directory / "tbb.lib"]
++        self.flags = ["/nologo", "/std:c++17", "/EHsc", "/MD", "/bigobj", "/Zc:__cplusplus",
++                      "/" + args.optimization, "/fp:precise"]
++        if args.compiler == "cl":
++            self.flags += ["/permissive-", "/utf-8"]
++        self.flags += ["/D" + macro for macro in MACROS]
++        if args.threads:
++            self.flags.append("/DSTAN_THREADS")
++        self.flags += ["/I" + str(p) for p in self.includes]
++        self.clang_libs = []
++        if args.compiler == "clang-cl":
++            resource = Path(subprocess.check_output([self.cxx, "--print-resource-dir"], env=env, text=True).strip())
++            directory = resource / "lib" / "windows"
++            if directory.is_dir():
++                self.clang_libs.append("/LIBPATH:" + str(directory))
++                builtins = directory / "clang_rt.builtins-x86_64.lib"
++                if builtins.is_file():
++                    self.clang_libs.append(str(builtins))
++        print(f"Native build cache: {self.directory}", flush=True)
++        print(f"Dependencies: {self.boost.name}, {self.eigen.name}, {self.sundials.name}, {self.tbb.name}", flush=True)
++
++    def compile_cpp(self, source, target, extra=()):
++        run([self.cxx, *self.flags, *extra, "/TP", "/c", source, "/Fo" + str(target)], self.env)
++
++    def link_exe(self, objects, target, libs):
++        # Publish a complete executable only after the linker succeeds.
++        with tempfile.TemporaryDirectory(prefix="link-", dir=target.parent) as tmp:
++            staged = Path(tmp) / target.name
++            run([self.link, "/NOLOGO", "/MACHINE:X64", "/OUT:" + str(staged),
++                 *objects, *libs, "Ws2_32.lib", *self.clang_libs], self.env)
++            staged.replace(target)
++
++    def prepare(self):
++        """Use vendored headers; adapt only a private SUNDIALS include copy."""
++        shutil.copytree(self.sundials / "include", self.include, dirs_exist_ok=True)
++        for name in ("sundials_config.h", "sundials_export.h"):
++            path = self.include / "sundials" / name
++            text = path.read_text(encoding="utf-8")
++            text = text.replace("__attribute__ ((__deprecated__(msg)))", "__declspec(deprecated(msg))")
++            text = text.replace("__attribute__ ((__deprecated__))", "__declspec(deprecated)")
++            text = text.replace("#define SUNDIALS_HAVE_POSIX_TIMERS\n", "/* #undef SUNDIALS_HAVE_POSIX_TIMERS */\n")
++            path.write_text(text, encoding="utf-8")
++        version = self.tbb.name.removeprefix("tbb_")
++        archive = fetch(f"https://github.com/uxlfoundation/oneTBB/releases/download/v{version}/tbb-{version}-win.zip",
++                        BUILD / "downloads" / f"tbb-{version}-win.zip")
++        with zipfile.ZipFile(archive) as z:
++            for name in ("tbb.dll", "tbb.lib"):
++                candidates = [p for p in z.namelist() if p.lower().endswith("/" + name)
++                              and "/intel64/" in p.lower() and any(x.startswith("vc14") for x in p.lower().split("/"))]
++                if not candidates:
++                    raise RuntimeError(f"No x64 vc14-family {name} in {archive}")
++                chosen = sorted(candidates, key=lambda p: ("/vc14/" not in p.lower(), p))[0]
++                print(f"TBB: {chosen}", flush=True)
++                with z.open(chosen) as src, (self.directory / name).open("wb") as dst:
++                    shutil.copyfileobj(src, dst)
++            for name in z.namelist():
++                if name.rsplit("/", 1)[-1].lower() in {"license", "license.txt"}:
++                    (self.directory / "TBB-LICENSE.txt").write_bytes(z.read(name))
++                    break
++        bundled = ROOT / "bin" / "windows-stanc"
++        if bundled.is_file() and self.args.stanc_version == "nightly":
++            copy_binary(bundled, self.directory / "stanc.exe")
++        else:
++            tag = self.args.stanc_version
++            # Same nightly default and Windows asset as make/stanc.
++            asset = fetch(f"https://github.com/stan-dev/stanc3/releases/download/{tag}/windows-stanc",
++                          BUILD / "downloads" / f"stanc-{tag}.exe")
++            copy_binary(asset, self.directory / "stanc.exe")
++        run([self.directory / "stanc.exe", "--version"], self.env)
++
++    def build_sundials(self):
++        """Match Stan Math's C source groups, including ARKODE when present."""
++        src = self.sundials / "src"
++        common = [p for p in (src / "sundials").glob("*.c") if p.name != "sundials_profiler.c"]
++        for folder in ("sunmatrix/band", "sunmatrix/dense", "sunlinsol/band", "sunlinsol/dense",
++                       "sunnonlinsol/newton", "sunnonlinsol/fixedpoint"):
++            common += [p for p in (src / folder).glob("*.c") if not p.name.startswith("f")]
++        groups = {}
++        for name in self.groups:
++            if name == "nvecserial":
++                groups[name] = [src / "nvector/serial/nvector_serial.c", src / "sundials/sundials_math.c"]
++            else:
++                files = list((src / name).glob("*.c"))
++                if not files:
++                    raise RuntimeError(f"Missing SUNDIALS {name} sources")
++                groups[name] = sorted(set(common + files))
++        objects = {p: self.directory / ("_".join(p.relative_to(src).parts) + ".obj")
++                   for p in sorted({p for files in groups.values() for p in files})}
++
++        def compile_c(path):
++            args = [self.cxx, "/nologo", "/TC", "/c", "/MD", "/O2", "/DNDEBUG",
++                    "/DSUNDIALS_STATIC_DEFINE", "/DNO_FPRINTF_OUTPUT", "/D_USE_MATH_DEFINES",
++                    "/I" + str(self.include), "/I" + str(src / "sundials"),
++                    "/FI" + str(self.include / "stan_sundials_printf_override.hpp"), path, "/Fo" + str(objects[path])]
++            if self.args.compiler == "cl":
++                args.insert(3, "/std:c11")
++            run(args, self.env)
++
++        with ThreadPoolExecutor(max_workers=self.args.jobs) as pool:
++            list(pool.map(compile_c, objects))
++        for name, paths in groups.items():
++            target = self.directory / f"sundials_{name}.lib"
++            target.unlink(missing_ok=True)
++            run([self.lib, "/NOLOGO", "/OUT:" + str(target), *(objects[p] for p in paths)], self.env)
++
++    def publish(self):
++        for name in ("stanc.exe", "tbb.dll", *(u + ".exe" for u in UTILITIES)):
++            copy_binary(self.directory / name, ROOT / "bin" / name)
++        license_file = self.directory / "TBB-LICENSE.txt"
++        if license_file.is_file():
++            copy_binary(license_file, ROOT / "bin" / license_file.name)
++
++    def build(self):
++        required = [*self.libs, self.directory / "main.obj", self.directory / "tbb.dll",
++                    self.directory / "stanc.exe", *(self.directory / (u + ".exe") for u in UTILITIES)]
++        if self.args.rebuild or not self.marker.is_file() or not all(p.is_file() for p in required):
++            self.marker.unlink(missing_ok=True)
++            self.prepare()
++            self.build_sundials()
++            self.compile_cpp(ROOT / "src/cmdstan/main.cpp", self.directory / "main.obj")
++            for utility in UTILITIES:
++                obj = self.directory / (utility + ".obj")
++                self.compile_cpp(ROOT / "src/cmdstan" / (utility + ".cpp"), obj)
++                self.link_exe([obj], self.directory / (utility + ".exe"), self.libs)
++            self.marker.write_text(json.dumps(self.config, indent=2), encoding="utf-8")
++        self.publish()
++        print("CmdStan native Windows build complete", flush=True)
++
++    def model(self, source):
++        source = source.resolve()
++        if source.suffix.lower() != ".stan" or not source.is_file():
++            raise RuntimeError(f"Expected an existing .stan model: {source}")
++        self.build()
++        target = source.with_suffix(".exe")
++        copy_binary(self.directory / "tbb.dll", target.parent / "tbb.dll")
++        with tempfile.TemporaryDirectory(prefix="model-", dir=self.directory) as tmp:
++            generated = Path(tmp) / (source.stem + ".hpp")
++            obj = generated.with_suffix(".obj")
++            run([self.directory / "stanc.exe", *self.args.stanc_flag, "--o=" + str(generated), source], self.env)
++            self.compile_cpp(generated, obj, ["/I" + str(source.parent)])
++            self.link_exe([obj, self.directory / "main.obj"], target, self.libs)
++        license_file = self.directory / "TBB-LICENSE.txt"
++        if license_file.is_file():
++            copy_binary(license_file, target.parent / license_file.name)
++        print(f"Model executable: {target}", flush=True)
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("action", choices=("install", "build", "model"))
++    parser.add_argument("target", nargs="?", help="portable (install) or path to .stan (model)")
++    parser.add_argument("--compiler", choices=("cl", "clang-cl"), default="clang-cl")
++    parser.add_argument("--toolchain", choices=("auto", "official", "portable"), default="auto")
++    parser.add_argument("--accept-license", action="store_true")
++    parser.add_argument("--optimization", choices=("O2", "Od"), default="O2")
++    parser.add_argument("--threads", action="store_true")
++    parser.add_argument("--stanc-version", default=os.environ.get("STANC3_VERSION", "nightly"))
++    parser.add_argument("--stanc-flag", action="append", default=[])
++    parser.add_argument("--rebuild", action="store_true")
++    parser.add_argument("-j", "--jobs", type=int, default=2, help="parallel SUNDIALS C compilations")
++    args = parser.parse_args()
++    if args.jobs < 1:
++        parser.error("--jobs must be positive")
++    if not re.fullmatch(r"[A-Za-z0-9._-]+", args.stanc_version) or args.stanc_version in {".", ".."}:
++        parser.error("--stanc-version must be a release tag or nightly")
++    if args.action == "install" and args.target not in {None, "portable"}:
++        parser.error("install only supports portable")
++    if args.action == "model" and not args.target:
++        parser.error("model requires a .stan file")
++    if args.action == "build" and args.target:
++        parser.error("build takes no target")
++    if sys.platform != "win32" or sys.maxsize <= 2**32:
++        parser.error("Native Windows x64 Python is required")
++    try:
++        if args.action == "install":
++            install(args)
++            return
++        build = Build(args, environment(args))
++        if args.action == "build":
++            build.build()
++        else:
++            build.model(Path(args.target))
++    except (RuntimeError, OSError, subprocess.CalledProcessError) as exc:
++        parser.exit(1, f"Windows build failed: {exc}\n")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/windows_toolchain.py b/scripts/windows_toolchain.py
+new file mode 100644
+index 0000000..1b08d59
+--- /dev/null
++++ b/scripts/windows_toolchain.py
+@@ -0,0 +1,259 @@
++"""Install and discover the Windows C++ toolchain used by cmdstan."""
++
++import hashlib
++import os
++import shutil
++import subprocess
++import sys
++import tarfile
++import tempfile
++import urllib.request
++from pathlib import Path
++from typing import Dict
++
++PORTABLE_URL = (
++    "https://gist.githubusercontent.com/mmozeiko/7f3162ec2988e81e56d5c4e22cde9977/"
++    "raw/49b58850aa5e5c1e65f090d4651ee76607883e11/portable-msvc.py"
++)
++PORTABLE_SHA256 = "1791cccca594ff083ce8d3e0a139e6156d2c312e24332a909e608010f0230a51"
++LLVM_VERSION = "20.1.8"
++LLVM_ARCHIVE = f"clang+llvm-{LLVM_VERSION}-x86_64-pc-windows-msvc.tar.xz"
++LLVM_URL = f"https://github.com/llvm/llvm-project/releases/download/llvmorg-{LLVM_VERSION}/{LLVM_ARCHIVE}"
++LLVM_SHA256 = "f229769f11d6a6edc8ada599c0cda964b7dee6ab1a08c6cf9dd7f513e85b107f"
++LICENSE_URL = "https://visualstudio.microsoft.com/license-terms/"
++
++
++def toolchain_directory() -> Path:
++    """Return the persistent portable toolchain directory, honoring the environment override."""
++    override = os.environ.get("CMDSTAN_TOOLCHAIN_DIR")
++    if override:
++        return Path(os.path.expandvars(override)).expanduser().resolve()
++    return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "cmdstan" / "toolchain"
++
++
++def download(url: str, target: Path, sha256: str) -> None:
++    """Download a pinned toolchain asset and verify its SHA-256 digest."""
++    print(f"Downloading {url}", flush=True)
++    digest = hashlib.sha256()
++    with urllib.request.urlopen(url, timeout=120) as response, target.open("wb") as output:
++        while chunk := response.read(1024 * 1024):
++            output.write(chunk)
++            digest.update(chunk)
++    if digest.hexdigest() != sha256:
++        target.unlink()
++        raise RuntimeError(f"SHA-256 mismatch for {url}")
++    print(f"Verified {target.name}: {target.stat().st_size:,} bytes", flush=True)
++
++
++def install_portable(root: Path, family: str, accept_license: bool = False) -> None:
++    """Install portable MSVC and, for clang-cl builds, LLVM into root.
++
++    Existing installations are reused. Downloading Microsoft components
++    requires explicit license acceptance. The installer does not change PATH.
++    """
++    if sys.platform != "win32":
++        raise RuntimeError("Portable MSVC installation is supported on Windows only")
++    if family not in {"cl", "clang-cl"}:
++        raise ValueError(f"Unsupported compiler: {family}")
++    msvc = root / "msvc"
++    llvm = root / "llvm"
++    if not (msvc / "setup_x64.bat").is_file():
++        if msvc.exists():
++            raise RuntimeError(f"Incomplete MSVC installation: {msvc}. Remove or relocate it before retrying.")
++        if not accept_license:
++            raise RuntimeError(f"Review the Microsoft Build Tools and SDK license terms: {LICENSE_URL}")
++        root.mkdir(parents=True, exist_ok=True)
++        with tempfile.TemporaryDirectory(prefix="install-", dir=root) as tmp:
++            work = Path(tmp)
++            script = work / "portable-msvc.py"
++            download(PORTABLE_URL, script, PORTABLE_SHA256)
++            subprocess.run(
++                [
++                    sys.executable,
++                    str(script),
++                    "--vs",
++                    "2022",
++                    "--target",
++                    "x64",
++                    "--host",
++                    "x64",
++                    "--msvc-version",
++                    os.environ.get("CMDSTAN_PORTABLE_MSVC_VERSION") or "14.44",
++                    "--sdk-version",
++                    os.environ.get("CMDSTAN_PORTABLE_SDK_VERSION") or "26100",
++                    "--accept-license",
++                ],
++                cwd=work,
++                check=True,
++            )
++            if not (work / "msvc" / "setup_x64.bat").is_file():
++                raise RuntimeError("Portable MSVC installer did not produce setup_x64.bat")
++            (work / "msvc").rename(msvc)
++    if family == "clang-cl" and not (llvm / "bin" / "clang-cl.exe").is_file():
++        if llvm.exists():
++            raise RuntimeError(f"Incomplete LLVM installation: {llvm}. Remove or relocate it before retrying.")
++        with tempfile.TemporaryDirectory(prefix="install-", dir=root) as tmp:
++            work = Path(tmp)
++            archive = work / LLVM_ARCHIVE
++            download(LLVM_URL, archive, LLVM_SHA256)
++            extracted = work / "extracted"
++            extracted.mkdir()
++            with tarfile.open(archive, "r:xz") as tar:
++                tar.extractall(extracted, filter="data")
++            candidates = [p.parent.parent for p in extracted.glob("*/bin/clang-cl.exe")]
++            if (extracted / "bin" / "clang-cl.exe").is_file():
++                candidates.append(extracted)
++            if len(candidates) != 1:
++                raise RuntimeError("LLVM archive did not contain a single clang-cl installation")
++            candidates[0].rename(llvm)
++    print(f"Portable toolchain: {root}", flush=True)
++
++
++def activate_batch(batch: Path, env: Dict[str, str]) -> Dict[str, str]:
++    """Run a Windows activation script and return its environment without changing the parent."""
++    with tempfile.TemporaryDirectory(prefix="cmdstan-env-") as tmp:
++        script = Path(tmp) / "activate.cmd"
++        script.write_text('@echo off\ncall "%CMDSTAN_ACTIVATE_BATCH%" >&2\nif errorlevel 1 exit /b 1\nset\n')
++        env = {**env, "CMDSTAN_ACTIVATE_BATCH": str(batch)}
++        result = subprocess.run(
++            [env.get("COMSPEC", "cmd.exe"), "/d", "/u", "/c", "call", str(script)],
++            env=env,
++            stdout=subprocess.PIPE,
++            stderr=subprocess.PIPE,
++            check=False,
++        )
++        if result.returncode:
++            encoding = "utf-16-le" if b"\0" in result.stderr[:200] else "utf-8"
++            diagnostics = result.stderr.decode(encoding, errors="replace")
++            raise RuntimeError(f"Toolchain activation failed ({result.returncode}): {batch}\n{diagnostics[-4000:]}")
++    activated = {}
++    for line in result.stdout.decode("utf-16-le").splitlines():
++        if "=" in line and not line.startswith("="):
++            key, value = line.split("=", 1)
++            activated[key.upper()] = value
++    activated.pop("CMDSTAN_ACTIVATE_BATCH", None)
++    return activated
++
++
++def unactivated_environment(env: Dict[str, str]) -> Dict[str, str]:
++    """Remove Visual Studio and SDK activation variables and paths from an environment."""
++    env = {key.upper(): value for key, value in env.items()}
++    for key in tuple(env):
++        if key in {
++            "INCLUDE",
++            "LIB",
++            "LIBPATH",
++            "VCINSTALLDIR",
++            "VSINSTALLDIR",
++            "VCTOOLSINSTALLDIR",
++            "VCTOOLSVERSION",
++            "WINDOWSSDKDIR",
++            "WINDOWSSDKVERSION",
++            "UNIVERSALCRTSDKDIR",
++            "UCRTVERSION",
++        } or key.startswith("VSCMD_"):
++            env.pop(key)
++    env["PATH"] = os.pathsep.join(
++        p
++        for p in env.get("PATH", "").split(os.pathsep)
++        if "microsoft visual studio" not in p.lower() and "windows kits" not in p.lower()
++    )
++    return env
++
++
++def portable_environment(root: Path, family: str, env: Dict[str, str]) -> Dict[str, str]:
++    """Activate and verify a portable MSVC/SDK installation and optional LLVM."""
++    msvc = (root / "msvc").resolve()
++    batch = msvc / "setup_x64.bat"
++    if not batch.is_file():
++        raise RuntimeError(f"Portable MSVC not found: {batch}. Run python scripts/windows_build.py install portable")
++    activated = activate_batch(batch, unactivated_environment(env))
++    if family == "clang-cl":
++        llvm = root / "llvm" / "bin"
++        if not (llvm / "clang-cl.exe").is_file():
++            raise RuntimeError(f"Portable LLVM not found: {llvm}. Run python scripts/windows_build.py install portable")
++        activated["PATH"] = str(llvm) + os.pathsep + activated["PATH"]
++        actual = shutil.which("clang-cl.exe", path=activated["PATH"])
++        if not actual or Path(actual).resolve() != (llvm / "clang-cl.exe").resolve():
++            raise RuntimeError(f"Portable clang-cl.exe was not resolved inside {llvm}: {actual}")
++    for name in ("cl", "link", "lib"):
++        actual = shutil.which(name + ".exe", path=activated["PATH"])
++        if not actual or not Path(actual).resolve().is_relative_to(msvc):
++            raise RuntimeError(f"Portable {name}.exe was not resolved inside {msvc}: {actual}")
++    for key in ("INCLUDE", "LIB"):
++        values = [value for value in activated.get(key, "").split(os.pathsep) if value]
++        if not values or any(not Path(value).resolve().is_relative_to(msvc) for value in values):
++            raise RuntimeError(f"Portable {key} must contain only paths inside {msvc}")
++    return activated
++
++
++def official_environment(family: str, env: Dict[str, str]) -> Dict[str, str]:
++    """Discover and activate an installed Visual Studio 2022 x64 toolchain."""
++    vswhere = (
++        Path(env.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"))
++        / "Microsoft Visual Studio/Installer/vswhere.exe"
++    )
++    if not vswhere.is_file():
++        raise RuntimeError("Visual Studio Build Tools not found")
++    root = subprocess.check_output(
++        [
++            str(vswhere),
++            "-latest",
++            "-products",
++            "*",
++            "-version",
++            "[17.0,18.0)",
++            "-requires",
++            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
++            "-property",
++            "installationPath",
++            "-utf8",
++        ],
++        env=env,
++        encoding="utf-8",
++    ).strip()
++    if not root:
++        raise RuntimeError("Visual Studio 2022 C++ Build Tools not found")
++    activated = activate_batch(Path(root) / "VC/Auxiliary/Build/vcvars64.bat", unactivated_environment(env))
++    if family == "clang-cl":
++        existing = shutil.which("clang-cl.exe", path=env.get("PATH", ""))
++        directories = [
++            Path(env.get("PROGRAMFILES", r"C:\Program Files")) / "LLVM/bin",
++            Path(root) / "VC/Tools/Llvm/x64/bin",
++        ]
++        if existing:
++            directories.insert(0, Path(existing).parent)
++        for directory in directories:
++            if (directory / "clang-cl.exe").is_file():
++                activated["PATH"] = str(directory) + os.pathsep + activated["PATH"]
++                break
++    if not shutil.which(family + ".exe", path=activated["PATH"]):
++        raise RuntimeError(f"{family}.exe not found in the activated Visual Studio toolchain")
++    return activated
++
++
++def toolchain_environment(family: str) -> Dict[str, str]:
++    """Resolve the toolchain for a model build without downloading or modifying the process environment.
++
++    An explicit portable directory takes precedence over an activated compiler,
++    followed by the default portable installation and installed Visual Studio.
++    """
++    env = {key.upper(): value for key, value in os.environ.items()}
++    root = toolchain_directory()
++    if env.get("CMDSTAN_TOOLCHAIN_DIR"):
++        return portable_environment(root, family, env)
++    if env.get("INCLUDE") and env.get("LIB") and all(
++        shutil.which(name + ".exe", path=env.get("PATH", "")) for name in (family, "link", "lib")
++    ):
++        return env
++    if (root / "msvc" / "setup_x64.bat").is_file() and (
++        family == "cl" or (root / "llvm" / "bin" / "clang-cl.exe").is_file()
++    ):
++        return portable_environment(root, family, env)
++    try:
++        return official_environment(family, env)
++    except (RuntimeError, OSError, subprocess.CalledProcessError) as exc:
++        raise RuntimeError(
++            f"No usable {family} toolchain found. Install Visual Studio Build Tools or run "
++            f"python scripts/windows_build.py install portable. ({exc})"
++        ) from exc
