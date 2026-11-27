@@ -60,3 +60,7 @@ output*.csv
 #clangd
 compile_commands.json
 compile_flags.txt
+
+# Optional native Windows build
+/build/windows/
+/scripts/__pycache__/

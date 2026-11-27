@@ -1,0 +1,72 @@
+name: Native Windows CmdStan
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  native-windows:
+    name: ${{ matrix.profile }}
+    runs-on: windows-2025
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: official-msvc
+            compiler: cl
+            toolchain: official
+          - profile: official-clang
+            compiler: clang-cl
+            toolchain: official
+          - profile: portable-msvc
+            compiler: cl
+            toolchain: portable
+          - profile: portable-clang
+            compiler: clang-cl
+            toolchain: portable
+    env:
+      # The repository maintainers must review the applicable Microsoft terms
+      # before enabling portable downloads in this workflow.
+      CMDSTAN_ACCEPT_MSVC_LICENSE: 'yes'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test Windows build preparation
+        run: python scripts/test_windows_build.py
+      - name: Build CmdStan utilities and libraries
+        run: python scripts/windows_build.py build --compiler ${{ matrix.compiler }} --toolchain ${{ matrix.toolchain }} -j 2
+      - name: Compile Bernoulli model (reuse existing native build)
+        run: python scripts/windows_build.py model examples/bernoulli/bernoulli.stan --compiler ${{ matrix.compiler }} --toolchain ${{ matrix.toolchain }}
+      - name: Sample two chains
+        shell: pwsh
+        run: |
+          & .\examples\bernoulli\bernoulli.exe sample num_samples=100 num_warmup=100 data file=examples/bernoulli/bernoulli.data.json random seed=12345 id=1 output file=chain1.csv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\examples\bernoulli\bernoulli.exe sample num_samples=100 num_warmup=100 data file=examples/bernoulli/bernoulli.data.json random seed=12345 id=2 output file=chain2.csv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check samples with CmdStan utilities
+        shell: pwsh
+        run: |
+          & .\bin\stansummary.exe chain1.csv chain2.csv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\bin\diagnose.exe chain1.csv chain2.csv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run upstream CmdStan interface tests
+        run: python runCmdStanTests.py --native --compiler ${{ matrix.compiler }} --toolchain ${{ matrix.toolchain }} -j2 src/test/interface
+      - name: Upload sample outputs and native build configuration
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-windows-${{ matrix.profile }}
+          if-no-files-found: ignore
+          path: |
+            chain1.csv
+            chain2.csv
+            build/windows/*/complete.json
+            test/**/*.xml

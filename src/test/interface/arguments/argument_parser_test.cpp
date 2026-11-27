@@ -71,7 +71,7 @@ class CmdStanArgumentsArgumentParser : public testing::Test {
 };
 
 TEST_F(CmdStanArgumentsArgumentParser, default) {
-  const char *argv[] = {};
+  const char *argv[] = {nullptr};
   int argc = 0;
 
   err_code = parser->parse_args(argc, argv, writer, writer);

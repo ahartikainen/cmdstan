@@ -21,6 +21,7 @@ def usage():
     sys.stdout.write('usage: %s <path/test/dir(/files)>\n' % sys.argv[0])
     sys.stdout.write('or\n')
     sys.stdout.write('       %s -j<#cores> <path/test/dir(/files)>\n' % sys.argv[0])
+    sys.stdout.write('       %s --native --help (native Windows)\n' % sys.argv[0])
     sys.exit(0)
 
 def stopErr(msg, returncode):
@@ -133,6 +134,10 @@ def runTest(name, mpi=False, j=1):
     doCommand(command)
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == '--native':
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              'scripts', 'windows_test.py')
+        sys.exit(subprocess.call([sys.executable, script] + sys.argv[2:]))
     if len(sys.argv) < 2:
         usage()
 
