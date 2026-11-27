@@ -299,11 +299,12 @@ class Build:
         self.publish()
         print("CmdStan native Windows build complete", flush=True)
 
-    def model(self, source):
+    def model(self, source, *, build_first=True):
         source = source.resolve()
         if source.suffix.lower() != ".stan" or not source.is_file():
             raise RuntimeError(f"Expected an existing .stan model: {source}")
-        self.build()
+        if build_first:
+            self.build()
         target = source.with_suffix(".exe")
         copy_binary(self.directory / "tbb.dll", target.parent / "tbb.dll")
         with tempfile.TemporaryDirectory(prefix="model-", dir=self.directory) as tmp:
@@ -318,10 +319,7 @@ class Build:
         print(f"Model executable: {target}", flush=True)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("install", "build", "model"))
-    parser.add_argument("target", nargs="?", help="portable (install) or path to .stan (model)")
+def add_build_arguments(parser):
     parser.add_argument("--compiler", choices=("cl", "clang-cl"), default="clang-cl")
     parser.add_argument("--toolchain", choices=("auto", "official", "portable"), default="auto")
     parser.add_argument("--accept-license", action="store_true")
@@ -331,19 +329,30 @@ def main():
     parser.add_argument("--stanc-flag", action="append", default=[])
     parser.add_argument("--rebuild", action="store_true")
     parser.add_argument("-j", "--jobs", type=int, default=2, help="parallel SUNDIALS C compilations")
-    args = parser.parse_args()
+
+
+def validate_build_arguments(parser, args):
     if args.jobs < 1:
         parser.error("--jobs must be positive")
     if not re.fullmatch(r"[A-Za-z0-9._-]+", args.stanc_version) or args.stanc_version in {".", ".."}:
         parser.error("--stanc-version must be a release tag or nightly")
+    if sys.platform != "win32" or sys.maxsize <= 2**32:
+        parser.error("Native Windows x64 Python is required")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=("install", "build", "model"))
+    parser.add_argument("target", nargs="?", help="portable (install) or path to .stan (model)")
+    add_build_arguments(parser)
+    args = parser.parse_args()
+    validate_build_arguments(parser, args)
     if args.action == "install" and args.target not in {None, "portable"}:
         parser.error("install only supports portable")
     if args.action == "model" and not args.target:
         parser.error("model requires a .stan file")
     if args.action == "build" and args.target:
         parser.error("build takes no target")
-    if sys.platform != "win32" or sys.maxsize <= 2**32:
-        parser.error("Native Windows x64 Python is required")
     try:
         if args.action == "install":
             install(args)

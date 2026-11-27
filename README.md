@@ -108,3 +108,31 @@ checkout from a GCC/MinGW build: the outputs and adjacent TBB DLL have the same
 names but different ABIs. This is an experimental CPU build path; GNU Make and
 CmdStanPy integration, MPI, OpenCL, user-header flags, precompiled headers and
 full native test-suite support are not included yet.
+
+
+#### Upstream CmdStan interface tests (native Windows)
+
+Use the same test sources, models and GoogleTest assertions as the existing
+Jenkins interface test stage, without GNU Make:
+
+```bat
+python runCmdStanTests.py --native --compiler clang-cl --toolchain portable -j2 src/test/interface
+python runCmdStanTests.py --native --compiler cl --toolchain official src/test/interface/log_prob_test.cpp
+```
+
+With `--native`, the existing runner delegates compilation to the native
+Windows build. Model prerequisites come from `make/tests`; GoogleTest comes
+from the checked-out Stan Math submodule. Results are written to
+`test/interface/**/*.xml` (and the test executables use the same target paths
+as the Make-based runner). Tests run sequentially because they share output
+files. `-j` controls the SUNDIALS build; C++ tests and models are currently
+compiled sequentially. Do not run different compiler configurations in the
+same checkout concurrently. Use separate worktrees for parallel configurations.
+The compiler, toolchain and `--threads` options match `windows_build.py`.
+Without `--native`, the existing runner is unchanged.
+
+These are CmdStan's CPU interface tests; the upstream MPI and OpenCL test
+files are feature-gated and contain no active tests in this configuration.
+Stan and Stan Math have separate test runners and are not covered by this
+command. The GitHub Actions Windows matrix runs the upstream CPU suite for
+all four native compiler/toolchain profiles.

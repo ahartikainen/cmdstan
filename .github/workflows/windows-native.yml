@@ -9,7 +9,7 @@ jobs:
   native-windows:
     name: ${{ matrix.profile }}
     runs-on: windows-2025
-    timeout-minutes: 120
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
@@ -57,6 +57,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & .\bin\diagnose.exe chain1.csv chain2.csv
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run upstream CmdStan interface tests
+        run: python runCmdStanTests.py --native --compiler ${{ matrix.compiler }} --toolchain ${{ matrix.toolchain }} -j2 src/test/interface
       - name: Upload sample outputs and native build configuration
         if: always()
         uses: actions/upload-artifact@v4
@@ -67,3 +69,4 @@ jobs:
             chain1.csv
             chain2.csv
             build/windows/*/complete.json
+            test/**/*.xml

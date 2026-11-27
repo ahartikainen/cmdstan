@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdio>
 #include <stdexcept>
 #include <fstream>
 #include <iostream>
@@ -157,7 +158,11 @@ std::ostream &operator<<(std::ostream &os, const run_command_output &out) {
 run_command_output run_command(std::string command) {
   FILE *in;
   std::string command_plus = command + " 2>&1";  // put stderr to stdout
+#ifdef _MSC_VER
+  in = _popen(command_plus.c_str(), "r");
+#else
   in = popen(command_plus.c_str(), "r");
+#endif
 
   if (!in) {
     std::string err_msg;
@@ -176,7 +181,11 @@ run_command_output run_command(std::string command) {
   auto time_end = std::chrono::system_clock::now();
 
   // bits 15-8 is err code, bit 7 if core dump, bits 6-0 is signal number
+#ifdef _MSC_VER
+  int err_code = _pclose(in);
+#else
   int err_code = pclose(in);
+#endif
   if (err_code != 0 && (err_code >> 8) > 0)
     err_code >>= 8;
   if (err_code > 127) {  // covers stan_services and CLI11 - not segfault
